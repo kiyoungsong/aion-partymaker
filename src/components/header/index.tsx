@@ -1,4 +1,6 @@
-import { useBossStore } from "../../stores";
+import { useEffect, useRef, useState } from "react";
+import { useBossStore, useWeightStore } from "../../stores";
+import { WeightsModal } from "../modal";
 
 interface RaidEntry {
   id: string;
@@ -16,6 +18,24 @@ const RAIDS: RaidEntry[] = [
 
 export const Header = () => {
   const { raid, setRaid } = useBossStore();
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [weightsOpen, setWeightsOpen] = useState(false);
+  const { weights, setWeights, resetWeights } = useWeightStore();
+  const settingsWrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!settingsOpen) return;
+
+    const handleOutsideClick = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (settingsWrapRef.current?.contains(target)) return;
+      setSettingsOpen(false);
+    };
+
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, [settingsOpen]);
+
   return (
     <header
       className="sticky top-0 z-50 w-full border-b border-[#232C45] backdrop-blur-md
@@ -26,7 +46,7 @@ export const Header = () => {
         style={{ height: 56 }}
       >
         <div className="flex items-center gap-2.5 border-r border-[#232C45] pr-3 sm:pr-[18px]">
-          <div className="grid h-[34px] w-[34px] place-items-center rounded-[9px] border border-[#2E3A5C] bg-gradient-to-br from-[#1B2440] to-[#0F1628]">
+          <div className="grid h-[34px] w-[34px] place-items-center rounded-[9px] border border-[#2E3A5C] bg-linear-to-br from-[#1B2440] to-[#0F1628]">
             <svg
               width="22"
               height="22"
@@ -101,11 +121,19 @@ export const Header = () => {
           </button> */}
         </nav>
 
-        {/* <div className="hidden h-full items-center border-l border-[#232C45] pl-[18px] sm:flex">
+        <div
+          ref={settingsWrapRef}
+          className="hidden sm:flex items-center pl-[18px] border-l border-[#232C45] h-full relative"
+        >
           <button
+            onClick={() => setSettingsOpen((o) => !o)}
             aria-label="설정"
-            title="설정"
-            className="grid h-8 w-8 place-items-center rounded-lg border border-transparent text-[#9AA6BF] transition hover:border-[#232C45] hover:bg-[#131A2B] hover:text-[#E6ECF7]"
+            className={`cursor-pointer w-8 h-8 rounded-[8px] border grid place-items-center transition-all duration-[120ms]
+                ${
+                  settingsOpen
+                    ? "text-[#E6ECF7] bg-[#131A2B] border-[#232C45]"
+                    : "text-[#9AA6BF] bg-transparent border-transparent hover:text-[#E6ECF7] hover:bg-[#131A2B] hover:border-[#232C45]"
+                }`}
           >
             <svg
               width="16"
@@ -116,11 +144,46 @@ export const Header = () => {
               strokeWidth="1.7"
             >
               <circle cx="12" cy="12" r="3" />
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.36.146.668.398.881.713A1.65 1.65 0 0 0 21 10.6h.09a2 2 0 1 1 0 4H21a1.65 1.65 0 0 0-1.51 1z" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.36.15.67.4.88.71A1.65 1.65 0 0 0 21 10.6h.09a2 2 0 1 1 0 4H21a1.65 1.65 0 0 0-1.51 1z" />
             </svg>
           </button>
-        </div> */}
+          {settingsOpen && (
+            <div
+              className="absolute top-[calc(100%+8px)] right-0 min-w-[180px] bg-[#131A2B] border border-[#232C45]
+                rounded-[10px] p-1.5 shadow-[0_16px_40px_rgba(0,0,0,0.45)] z-[80] animate-[menuIn_0.12s_ease-out]"
+            >
+              <button
+                onClick={() => {
+                  setSettingsOpen(false);
+                  setWeightsOpen(true);
+                }}
+                className=" flex items-center gap-2.5 w-full px-2.5 py-2.5 rounded-[7px] bg-transparent border-0
+                    text-[#E6ECF7] text-[13px] text-left cursor-pointer transition hover:bg-[#182037]"
+              >
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                >
+                  <path d="M3 6h18M6 12h12M9 18h6" />
+                </svg>
+                <span>가중치 설정</span>
+              </button>
+            </div>
+          )}
+        </div>
       </div>
+      {weightsOpen && (
+        <WeightsModal
+          weights={weights}
+          setWeights={setWeights}
+          onClose={() => setWeightsOpen(false)}
+          onReset={resetWeights}
+        />
+      )}
     </header>
   );
 };

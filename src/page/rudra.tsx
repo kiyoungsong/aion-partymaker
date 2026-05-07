@@ -104,6 +104,7 @@ function parseRow(str: string): { name: string; attr: AttrKey; cp: number } {
   return { name, attr: attr as AttrKey, cp: Number(cp) };
 }
 
+// 임시 데이터
 const seedPlayers = (): Player[] => {
   const data: Array<{ name: string; main: string; sub: string[] }> = [
     {
@@ -158,6 +159,19 @@ const seedPlayers = (): Player[] => {
     subs: p.sub.map((s, j) => ({ id: `s${i}-${j}`, ...parseRow(s) })),
   }));
 };
+
+const emptyPlayers = (): Player[] =>
+  Array.from({ length: 8 }, (_, i) => ({
+    id: "p" + i,
+    name: "",
+    main: { id: "m" + i, name: "", attr: "궁성", cp: 0 },
+    subs: Array.from({ length: 3 }, (_, j) => ({
+      id: `s${i}-${j}`,
+      name: "",
+      attr: "궁성" as AttrKey,
+      cp: 0,
+    })),
+  }));
 
 interface BulkResult {
   players: Player[];
@@ -277,7 +291,7 @@ const PrimaryButton: React.FC<
 
 // ---------- App ----------
 export const RudraPage = () => {
-  const [players, setPlayers] = useState<Player[]>(seedPlayers);
+  const [players, setPlayers] = useState<Player[]>(emptyPlayers);
   const [subCount, setSubCount] = useState<number>(3);
   const [games, setGames] = useState<Game[]>([]);
   const [bulkOpen, setBulkOpen] = useState<boolean>(false);

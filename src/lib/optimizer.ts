@@ -158,7 +158,7 @@ function scorePlan(parties: PartyGroup[][], weights: Weights): number {
     return (
       s +
       (m && !PARTY2_PREFERRED_JOBS.has(m.job)
-        ? 200_000 * weights.rules.party2MainPref
+        ? 200000000 * weights.rules.party2MainPref
         : 0)
     );
   }, 0);
@@ -255,13 +255,12 @@ function buildCandidate(
   shuffle(preferred, rand);
 
   const assigned = new Set<number>();
-  const prefCount = Math.min(p2Slots.length, preferred.length);
-  for (let i = 0; i < prefCount; i++) {
-    const slot = p2Slots[i];
+  // preferred를 2파티에 먼저 배정
+  for (let i = 0; i < preferred.length && i < RAID_COUNT; i++) {
     const ui = preferred[i];
-    parties[slot.raidIdx][1].members.push(users[ui].main);
-    mainRaidByUser[ui] = slot.raidIdx;
-    raidUserSets[slot.raidIdx].add(ui);
+    parties[i][1].members.push(users[ui].main); // 무조건 partyIndex=1
+    mainRaidByUser[ui] = i;
+    raidUserSets[i].add(ui);
     assigned.add(ui);
   }
 

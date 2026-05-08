@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState, type JSX } from "react";
 import { useBossStore, usePlayerDraftStore, useWeightStore } from "../stores";
 import {
   buildBestPlan,
-  RAID_COUNT,
   type OptimizerChar,
   type PartyGroup,
   type PartyPlan,
@@ -443,6 +442,9 @@ function ResultSection({
   const maxAvg = Math.round(Math.max(...allAvgs));
   const minAvg = Math.round(Math.min(...allAvgs));
 
+  // 공대 수는 plan.parties.length 기준 (동적)
+  const raidCount = plan.parties.length;
+
   return (
     <section className="mt-3.5 flex flex-col gap-[18px]">
       {/* 경고 */}
@@ -474,8 +476,8 @@ function ResultSection({
         ))}
       </div>
 
-      {/* 공대별 출력 */}
-      {Array.from({ length: RAID_COUNT }, (_, r) => (
+      {/* 공대별 출력 — plan.parties.length 기준으로 동적 렌더 */}
+      {Array.from({ length: raidCount }, (_, r) => (
         <RaidBlock key={r} raidIndex={r} parties={plan.parties[r]} />
       ))}
     </section>

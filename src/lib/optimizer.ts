@@ -1,15 +1,32 @@
 /**
  * optimizer.ts
  * C# PartyOptimizer → TypeScript 이식
- * 직업 가중치 기반 4공대 × 2파티 최적화
+ * 직업 가중치 기반 N공대 × 2파티 최적화
+ *
+ * 공대 수 = 부캐 수 + 1  (플레이어 8명 고정 기준)
+ *   부캐 1개 → 총 16캐릭터 → 2공대
+ *   부캐 2개 → 총 24캐릭터 → 3공대
+ *   부캐 3개 → 총 32캐릭터 → 4공대
  */
 import type { Weights } from "../types/party";
 import { DEFAULT_WEIGHTS } from "../meta";
 
 // ─── 상수 ─────────────────────────────────────────────────────
+/** @deprecated UI 렌더용으로만 남겨둠. 로직에서는 getRaidCount() 사용 */
 export const RAID_COUNT = 4;
+
 export const PARTY_PER_RAID = 2;
 const CANDIDATE_COUNT = 35000;
+
+/**
+ * 부캐 수에 따른 공대 수 계산
+ *   altCount 1 → 2공대
+ *   altCount 2 → 3공대
+ *   altCount 3 → 4공대
+ */
+export function getRaidCount(altCount: number): number {
+  return altCount + 1;
+}
 
 /** 2파티 메인으로 선호되는 직업 */
 const PARTY2_PREFERRED_JOBS = new Set(["검성", "수호성", "호법성", "살성"]);
@@ -215,6 +232,7 @@ function constraintPenalty(
 function buildCandidate(
   users: OptimizerUser[],
   altCountPerParty: number,
+  raidCount: number,
   iteration: number,
   rand: () => number,
   weights: Weights,
@@ -222,7 +240,7 @@ function buildCandidate(
   const raidAltCap = PARTY_PER_RAID * altCountPerParty;
 
   // 빈 파티 구조 초기화
-  const parties: PartyGroup[][] = Array.from({ length: RAID_COUNT }, (_, r) =>
+  const parties: PartyGroup[][] = Array.from({ length: raidCount }, (_, r) =>
     Array.from({ length: PARTY_PER_RAID }, (_, p) => ({
       raidIndex: r,
       partyIndex: p,
@@ -230,11 +248,11 @@ function buildCandidate(
     })),
   );
   const raidAltPool: OptimizerChar[][] = Array.from(
-    { length: RAID_COUNT },
+    { length: raidCount },
     () => [],
   );
   const raidUserSets: Set<number>[] = Array.from(
-    { length: RAID_COUNT },
+    { length: raidCount },
     () => new Set(),
   );
   const mainRaidByUser: number[] = new Array(users.length).fill(-1);
@@ -243,12 +261,6 @@ function buildCandidate(
   const userIdxs = users.map((_, i) => i);
   shuffle(userIdxs, rand);
 
-  const p2Slots = Array.from({ length: RAID_COUNT }, (_, r) => ({
-    raidIdx: r,
-    partyIdx: 1,
-  }));
-  shuffle(p2Slots, rand);
-
   const preferred = userIdxs.filter((i) =>
     PARTY2_PREFERRED_JOBS.has(users[i].main.job),
   );
@@ -256,9 +268,9 @@ function buildCandidate(
 
   const assigned = new Set<number>();
   // preferred를 2파티에 먼저 배정
-  for (let i = 0; i < preferred.length && i < RAID_COUNT; i++) {
+  for (let i = 0; i < preferred.length && i < raidCount; i++) {
     const ui = preferred[i];
-    parties[i][1].members.push(users[ui].main); // 무조건 partyIndex=1
+    parties[i][1].members.push(users[ui].main);
     mainRaidByUser[ui] = i;
     raidUserSets[i].add(ui);
     assigned.add(ui);
@@ -266,7 +278,7 @@ function buildCandidate(
 
   // 남은 슬롯에 남은 유저 배정
   const remSlots: { raidIdx: number; partyIdx: number }[] = [];
-  for (let r = 0; r < RAID_COUNT; r++)
+  for (let r = 0; r < raidCount; r++)
     for (let p = 0; p < PARTY_PER_RAID; p++)
       if (parties[r][p].members.length === 0)
         remSlots.push({ raidIdx: r, partyIdx: p });
@@ -282,6 +294,7 @@ function buildCandidate(
   for (let i = 0; i < remUsers.length; i++) {
     const ui = remUsers[i];
     const slot = remSlots[i];
+    if (!slot) return null;
     parties[slot.raidIdx][slot.partyIdx].members.push(users[ui].main);
     mainRaidByUser[ui] = slot.raidIdx;
     raidUserSets[slot.raidIdx].add(ui);
@@ -295,7 +308,7 @@ function buildCandidate(
     if (iteration % 3 !== 0) shuffle(alts, rand);
 
     for (const alt of alts) {
-      const candidates = Array.from({ length: RAID_COUNT }, (_, r) => r)
+      const candidates = Array.from({ length: raidCount }, (_, r) => r)
         .filter(
           (r) =>
             r !== mainRaidByUser[user.userIndex] &&
@@ -315,7 +328,7 @@ function buildCandidate(
   }
 
   // ── 공대별 알트를 1·2파티로 분배 ──
-  for (let r = 0; r < RAID_COUNT; r++) {
+  for (let r = 0; r < raidCount; r++) {
     const alts = raidAltPool[r];
     const p1base = parties[r][0].members;
     const p2base = parties[r][1].members;
@@ -344,7 +357,7 @@ function buildCandidate(
 // ─── 경고 생성 ────────────────────────────────────────────────
 function buildWarnings(parties: PartyGroup[][]): string[] {
   const warns: string[] = [];
-  for (let r = 0; r < RAID_COUNT; r++) {
+  for (let r = 0; r < parties.length; r++) {
     const p2 = parties[r][1].members;
     const hasCleric = p2.some((x) => x.job === "치유성");
     const hasChanter = p2.some((x) => x.job === "호법성");
@@ -359,18 +372,29 @@ function buildWarnings(parties: PartyGroup[][]): string[] {
 /**
  * C# PartyOptimizer.BuildBestPlan() 에 해당.
  * 35,000회 후보를 생성해 최저 점수 플랜을 반환한다.
+ *
+ * 공대 수는 altCountPerParty 에 따라 자동 결정된다.
+ *   altCount 1 → 2공대, altCount 2 → 3공대, altCount 3 → 4공대
  */
 export function buildBestPlan(
   users: OptimizerUser[],
   altCountPerParty: number = 3,
   weights: Weights = DEFAULT_WEIGHTS,
 ): PartyPlan {
+  const raidCount = getRaidCount(altCountPerParty);
   const rand = makePrng(20260507);
   let best: PartyGroup[][] | null = null;
   let bestScore = Infinity;
 
   for (let i = 0; i < CANDIDATE_COUNT; i++) {
-    const cand = buildCandidate(users, altCountPerParty, i, rand, weights);
+    const cand = buildCandidate(
+      users,
+      altCountPerParty,
+      raidCount,
+      i,
+      rand,
+      weights,
+    );
     if (!cand) continue;
     const sc = scorePlan(cand, weights);
     if (sc < bestScore) {

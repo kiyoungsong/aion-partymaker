@@ -9,12 +9,13 @@
  *       부캐 2개 → 24캐릭터 → 3공대
  *       부캐 3개 → 32캐릭터 → 4공대
  *   - 1공대 = 파티1(4명) + 파티2(4명) = 8캐릭터
+ *   - 각 파티 본캐 수 = Math.round(공대 내 본캐 수 / 2) → 균등 분배
  *   - 각 파티에 본캐 최소 1명
  *   - 같은 플레이어 캐릭터는 같은 공대 불가
  *
  * ★ 2파티 배치 우선순위 ★
- *   1. 본캐 (isMain)
- *   2. 치유성 (단, p2에 치유 이미 있으면 추가 치유는 p1으로)
+ *   1. 본캐 (파티당 목표 본캐 수 도달 전까지만)
+ *   2. 치유성 (p2에 치유 이미 있으면 추가 치유는 p1으로)
  *   3. 근접 (살성 / 검성 / 호법성)
  *   4. 나머지
  *
@@ -88,18 +89,17 @@ function shuffle<T>(arr: T[], rand: () => number): T[] {
   return a;
 }
 
-// ─── 유효 전투력 (전투력 × 직업 가중치) ──────────────────────
+// ─── 유효 전투력 ──────────────────────────────────────────────
 function effectivePower(c: OptimizerChar, weights: Weights): number {
   const w = weights.damage[c.job as keyof Weights["damage"]] ?? 0.7;
   return c.power * w;
 }
 
-// ─── 2파티 배치 우선순위 (낮을수록 2파티 우선) ───────────────
+// ─── 2파티 배치 우선순위 (본캐 제외, 낮을수록 p2 우선) ────────
 function p2Priority(c: OptimizerChar): number {
-  if (c.isMain) return 0;
-  if (HEAL_JOBS.has(c.job)) return 1;
-  if (MELEE_JOBS.has(c.job)) return 2;
-  return 3;
+  if (HEAL_JOBS.has(c.job)) return 0;
+  if (MELEE_JOBS.has(c.job)) return 1;
+  return 2;
 }
 
 // ─── 전체 플랜 점수 (낮을수록 좋음) ──────────────────────────
@@ -114,18 +114,21 @@ function scorePlan(parties: PartyGroup[][], weights: Weights): number {
           0,
         ) / members.length;
 
+  // 유효 전투력 기준 분산/편차
   const epAvgs = all.map((p) => partyAvg(p.members, true));
   const epMean = epAvgs.reduce((s, x) => s + x, 0) / epAvgs.length;
   const epVariance =
     epAvgs.reduce((s, a) => s + (a - epMean) ** 2, 0) / epAvgs.length;
   const epRange = Math.max(...epAvgs) - Math.min(...epAvgs);
 
+  // raw 전투력 기준 분산/편차
   const rawAvgs = all.map((p) => partyAvg(p.members, false));
   const rawMean = rawAvgs.reduce((s, x) => s + x, 0) / rawAvgs.length;
   const rawVariance =
     rawAvgs.reduce((s, a) => s + (a - rawMean) ** 2, 0) / rawAvgs.length;
   const rawRange = Math.max(...rawAvgs) - Math.min(...rawAvgs);
 
+  // 공대 내 파티 간 유효 전투력 차이
   const raidDiff = parties.reduce((s, raid) => {
     return (
       s +
@@ -135,6 +138,7 @@ function scorePlan(parties: PartyGroup[][], weights: Weights): number {
     );
   }, 0);
 
+  // 파티2에 치유 없으면 페널티
   const healPenalty = parties.reduce((s, raid) => {
     const p2 = raid[1].members;
     if (p2.some((x) => HEAL_JOBS.has(x.job))) return s;
@@ -154,50 +158,72 @@ function scorePlan(parties: PartyGroup[][], weights: Weights): number {
 
 // ─── 파티 분할 ────────────────────────────────────────────────
 /**
- * 우선순위 순서대로 p2를 채우되,
- * p2에 치유가 1명 이상 확보된 이후 들어오는 추가 치유는 p1으로 보냄
- * 같은 우선순위 내에서는 유효 전투력 내림차순
- * 마지막에 각 파티 본캐 최소 1명 스왑 보장
+ * 본캐를 파티당 목표 수만큼 먼저 균등 분배한 뒤,
+ * 남은 슬롯을 부캐 우선순위(치유→근접→기타)로 채움
+ *
+ * 본캐 분배 규칙:
+ *   - p2 목표 본캐 수 = Math.round(총본캐 / 2)
+ *   - 치유/근접 본캐를 p2 우선, 나머지는 p1
+ *   - 목표 수 초과 시 p1으로
+ *
+ * 부캐 배치 규칙:
+ *   - 치유: p2에 치유 없으면 p2, 이미 있으면 p1
+ *   - 근접: p2 빈자리 우선
+ *   - 기타: 빈자리 채움
  */
 function splitIntoParties(
   chars: OptimizerChar[],
   weights: Weights,
   rand: () => number,
 ): [OptimizerChar[], OptimizerChar[]] | null {
+  const mains = shuffle(chars.filter((c) => c.isMain), rand);
+  const alts = shuffle(chars.filter((c) => !c.isMain), rand);
+
   const p1: OptimizerChar[] = [];
   const p2: OptimizerChar[] = [];
 
-  const sorted = shuffle(chars, rand).sort((a, b) => {
+  // ── 1. 본캐 균등 분배 ──
+  // p2 목표 본캐 수: 절반 (홀수면 p2에 1명 더)
+  const p2MainTarget = Math.round(mains.length / 2);
+
+  // 치유/근접 본캐를 p2 우선 배정
+  const mainsSorted = [...mains].sort((a, b) => {
+    const scoreA = HEAL_JOBS.has(a.job) ? 0 : MELEE_JOBS.has(a.job) ? 1 : 2;
+    const scoreB = HEAL_JOBS.has(b.job) ? 0 : MELEE_JOBS.has(b.job) ? 1 : 2;
+    if (scoreA !== scoreB) return scoreA - scoreB;
+    return effectivePower(b, weights) - effectivePower(a, weights);
+  });
+
+  for (const m of mainsSorted) {
+    if (p2.length < p2MainTarget) p2.push(m);
+    else p1.push(m);
+  }
+
+  // p1/p2 모두 본캐 최소 1명 보장
+  if (p1.length === 0 && p2.length > 1) p1.push(p2.pop()!);
+  if (p2.length === 0 && p1.length > 1) p2.push(p1.pop()!);
+  if (p1.length === 0 || p2.length === 0) return null;
+
+  // ── 2. 부캐 배치 (우선순위: 치유 → 근접 → 기타) ──
+  const altsSorted = [...alts].sort((a, b) => {
     const pd = p2Priority(a) - p2Priority(b);
     if (pd !== 0) return pd;
     return effectivePower(b, weights) - effectivePower(a, weights);
   });
 
-  for (const c of sorted) {
-    // 치유성이고 p2에 이미 치유가 있으면 → p1으로
+  for (const c of altsSorted) {
+    // 치유: p2에 이미 치유 있으면 p1으로
     if (HEAL_JOBS.has(c.job) && p2.some((x) => HEAL_JOBS.has(x.job))) {
-      p1.push(c);
+      if (p1.length < PARTY_SIZE) p1.push(c);
+      else if (p2.length < PARTY_SIZE) p2.push(c);
       continue;
     }
+    // 나머지: p2 빈자리 우선
     if (p2.length < PARTY_SIZE) p2.push(c);
-    else p1.push(c);
+    else if (p1.length < PARTY_SIZE) p1.push(c);
   }
 
   if (p1.length !== PARTY_SIZE || p2.length !== PARTY_SIZE) return null;
-
-  // 각 파티에 본캐 최소 1명 보장 (스왑)
-  if (!p1.some((c) => c.isMain)) {
-    const fromP2 = p2.findIndex((c) => c.isMain);
-    const toP1 = p1.findIndex((c) => !c.isMain);
-    if (fromP2 === -1 || toP1 === -1) return null;
-    [p1[toP1], p2[fromP2]] = [p2[fromP2], p1[toP1]];
-  }
-  if (!p2.some((c) => c.isMain)) {
-    const fromP1 = p1.findIndex((c) => c.isMain);
-    const toP2 = p2.findIndex((c) => !c.isMain);
-    if (fromP1 === -1 || toP2 === -1) return null;
-    [p2[toP2], p1[fromP1]] = [p1[fromP1], p2[toP2]];
-  }
 
   return [p1, p2];
 }

@@ -28,6 +28,19 @@ export function getRaidCount(altCount: number): number {
   return altCount + 1;
 }
 
+/**
+ * 공대당 알트 최대 수용 수 계산
+ * 총 알트 수(userCount × altCount)를 공대 수로 균등 분배
+ * 나머지가 있으면 앞 공대부터 1개씩 더 받음 → ceil 사용
+ */
+function getRaidAltCap(
+  userCount: number,
+  altCount: number,
+  raidCount: number,
+): number {
+  return Math.ceil((userCount * altCount) / raidCount);
+}
+
 /** 2파티 메인으로 선호되는 직업 */
 const PARTY2_PREFERRED_JOBS = new Set(["검성", "수호성", "호법성", "살성"]);
 
@@ -202,8 +215,13 @@ function constraintPenalty(
 ): number {
   let penalty = 0;
   const duplicatePenaltyWeight = weights.rules.duplicateUserPenalty;
-  const altCount = parties[0][0].members.length - 1; // partySize - 1 main
-  const partySize = altCount + 1;
+
+  // 파티당 알트 수는 공대별 실제 알트 수로 추정 (첫 공대 기준)
+  const raidAltCount = parties[0].reduce(
+    (s, p) => s + p.members.filter((x) => !x.isMain).length,
+    0,
+  );
+  const partySize = 1 + Math.round(raidAltCount / PARTY_PER_RAID);
 
   for (const raid of parties) {
     const raidMembers = raid.flatMap((p) => p.members);
@@ -237,7 +255,9 @@ function buildCandidate(
   rand: () => number,
   weights: Weights,
 ): PartyGroup[][] | null {
-  const raidAltCap = PARTY_PER_RAID * altCountPerParty;
+  // ── 공대당 알트 수용 상한: 총 알트를 공대 수로 균등 분배 ──
+  // 예) 8명 × 2알트 = 16알트, 3공대 → ceil(16/3) = 6
+  const raidAltCap = getRaidAltCap(users.length, altCountPerParty, raidCount);
 
   // 빈 파티 구조 초기화
   const parties: PartyGroup[][] = Array.from({ length: raidCount }, (_, r) =>
@@ -328,15 +348,20 @@ function buildCandidate(
   }
 
   // ── 공대별 알트를 1·2파티로 분배 ──
+  // 공대마다 실제 알트 수가 다를 수 있으므로 절반씩 나눔
   for (let r = 0; r < raidCount; r++) {
     const alts = raidAltPool[r];
     const p1base = parties[r][0].members;
     const p2base = parties[r][1].members;
+
+    // 이 공대에 배정된 알트를 절반씩 파티로 나눔
+    const halfSize = Math.floor(alts.length / 2);
+
     let bestP1: OptimizerChar[] | null = null;
     let bestP2: OptimizerChar[] | null = null;
     let bestSc = Infinity;
 
-    for (const p1alts of choose(alts, altCountPerParty)) {
+    for (const p1alts of choose(alts, halfSize)) {
       const p2alts = alts.filter((x) => !p1alts.includes(x));
       const sc = scoreRaidSplit(p1base, p2base, p1alts, p2alts, weights);
       if (sc < bestSc) {

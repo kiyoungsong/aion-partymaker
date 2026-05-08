@@ -14,7 +14,7 @@
  *
  * ★ 2파티 배치 우선순위 ★
  *   1. 본캐 (isMain)
- *   2. 치유성
+ *   2. 치유성 (단, p2에 치유 이미 있으면 추가 치유는 p1으로)
  *   3. 근접 (살성 / 검성 / 호법성)
  *   4. 나머지
  *
@@ -103,13 +103,6 @@ function p2Priority(c: OptimizerChar): number {
 }
 
 // ─── 전체 플랜 점수 (낮을수록 좋음) ──────────────────────────
-/**
- * 유효 전투력(가중치 적용) + raw 전투력(실제 체감) 모두 반영
- * - epAvg  : 딜기여도 기준 균등화
- * - rawAvg : 실제 전투력 수치 기준 균등화 (치유/호법 포함 체감)
- * - raidDiff : 같은 공대 내 파티 간 전력차 최소화
- * - healPenalty : 파티2에 치유/근접 없으면 페널티
- */
 function scorePlan(parties: PartyGroup[][], weights: Weights): number {
   const all = parties.flat();
 
@@ -121,21 +114,18 @@ function scorePlan(parties: PartyGroup[][], weights: Weights): number {
           0,
         ) / members.length;
 
-  // 유효 전투력 기준 분산 / 편차
   const epAvgs = all.map((p) => partyAvg(p.members, true));
   const epMean = epAvgs.reduce((s, x) => s + x, 0) / epAvgs.length;
   const epVariance =
     epAvgs.reduce((s, a) => s + (a - epMean) ** 2, 0) / epAvgs.length;
   const epRange = Math.max(...epAvgs) - Math.min(...epAvgs);
 
-  // raw 전투력 기준 분산 / 편차 (가중치 낮은 직업 포함 실제 체감 균형)
   const rawAvgs = all.map((p) => partyAvg(p.members, false));
   const rawMean = rawAvgs.reduce((s, x) => s + x, 0) / rawAvgs.length;
   const rawVariance =
     rawAvgs.reduce((s, a) => s + (a - rawMean) ** 2, 0) / rawAvgs.length;
   const rawRange = Math.max(...rawAvgs) - Math.min(...rawAvgs);
 
-  // 공대 내 파티 간 유효 전투력 차이
   const raidDiff = parties.reduce((s, raid) => {
     return (
       s +
@@ -145,7 +135,6 @@ function scorePlan(parties: PartyGroup[][], weights: Weights): number {
     );
   }, 0);
 
-  // 파티2에 치유 없으면 페널티
   const healPenalty = parties.reduce((s, raid) => {
     const p2 = raid[1].members;
     if (p2.some((x) => HEAL_JOBS.has(x.job))) return s;
@@ -154,13 +143,10 @@ function scorePlan(parties: PartyGroup[][], weights: Weights): number {
   }, 0);
 
   return (
-    // 유효 전투력 균형 (가중치 반영 딜 기여도)
     (epVariance / 1000) * weights.rules.cpBalance +
     epRange * 3 * weights.rules.cpBalance +
-    // raw 전투력 균형 (실제 체감 전투력)
     (rawVariance / 2000) * weights.rules.cpBalance +
     rawRange * 1.5 * weights.rules.cpBalance +
-    // 공대 내 파티 균형
     raidDiff * 1.4 * weights.rules.raidBalance +
     healPenalty
   );
@@ -168,8 +154,9 @@ function scorePlan(parties: PartyGroup[][], weights: Weights): number {
 
 // ─── 파티 분할 ────────────────────────────────────────────────
 /**
- * 우선순위 정렬 후 p2 먼저 채움
- * 같은 우선순위 내에서는 유효 전투력 내림차순 → 강한 캐릭터가 p2 우선
+ * 우선순위 순서대로 p2를 채우되,
+ * p2에 치유가 1명 이상 확보된 이후 들어오는 추가 치유는 p1으로 보냄
+ * 같은 우선순위 내에서는 유효 전투력 내림차순
  * 마지막에 각 파티 본캐 최소 1명 스왑 보장
  */
 function splitIntoParties(
@@ -183,11 +170,15 @@ function splitIntoParties(
   const sorted = shuffle(chars, rand).sort((a, b) => {
     const pd = p2Priority(a) - p2Priority(b);
     if (pd !== 0) return pd;
-    // 같은 우선순위면 유효 전투력 강한 캐릭터 먼저 p2
     return effectivePower(b, weights) - effectivePower(a, weights);
   });
 
   for (const c of sorted) {
+    // 치유성이고 p2에 이미 치유가 있으면 → p1으로
+    if (HEAL_JOBS.has(c.job) && p2.some((x) => HEAL_JOBS.has(x.job))) {
+      p1.push(c);
+      continue;
+    }
     if (p2.length < PARTY_SIZE) p2.push(c);
     else p1.push(c);
   }
@@ -238,7 +229,7 @@ function buildCandidate(
     () => new Set(),
   );
 
-  // ── 본캐 라운드로빈 배정 ──
+  // 본캐 라운드로빈 배정
   const mains = shuffle(users.map((u) => u.main), rand);
   for (let i = 0; i < mains.length; i++) {
     const r = i % raidCount;
@@ -246,7 +237,7 @@ function buildCandidate(
     userInRaid[r].add(mains[i].userIndex);
   }
 
-  // ── 부캐 배정: 강한 부캐부터 유효 전투력 합 적은 공대 우선 ──
+  // 부캐 배정: 강한 부캐부터 유효 전투력 합 적은 공대 우선
   const alts: OptimizerChar[] = [];
   for (const user of users) {
     for (const alt of user.alts.slice(0, altCount)) alts.push(alt);
@@ -269,12 +260,10 @@ function buildCandidate(
     userInRaid[candidates[0]].add(alt.userIndex);
   }
 
-  // ── 인원 검증 ──
   for (let r = 0; r < raidCount; r++) {
     if (raidChars[r].length !== charsPerRaid) return null;
   }
 
-  // ── 파티 분할 ──
   const parties: PartyGroup[][] = Array.from({ length: raidCount }, (_, r) =>
     Array.from({ length: PARTY_PER_RAID }, (_, p) => ({
       raidIndex: r,

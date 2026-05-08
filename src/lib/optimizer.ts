@@ -1,55 +1,33 @@
 /**
  * optimizer.ts
- * C# PartyOptimizer → TypeScript 이식
  * 직업 가중치 기반 N공대 × 2파티 최적화
  *
- * 공대 수 = 부캐 수 + 1  (플레이어 8명 고정 기준)
- *   부캐 1개 → 총 16캐릭터 → 2공대
- *   부캐 2개 → 총 24캐릭터 → 3공대
- *   부캐 3개 → 총 32캐릭터 → 4공대
+ * ★ 구조 정의 ★
+ *   - 플레이어 8명, 각자 본캐1 + 부캐N개 보유
+ *   - 공대 수 = 부캐 수 + 1
+ *       부캐 1개 → 16캐릭터 → 2공대
+ *       부캐 2개 → 24캐릭터 → 3공대
+ *       부캐 3개 → 32캐릭터 → 4공대
+ *   - 1공대 = 파티1(4명) + 파티2(4명) = 8캐릭터
+ *   - 각 파티에 본캐 최소 1명
+ *   - 같은 플레이어 캐릭터는 같은 공대 불가
+ *   - 치유성은 파티2 우선 배치
  */
 import type { Weights } from "../types/party";
 import { DEFAULT_WEIGHTS } from "../meta";
 
 // ─── 상수 ─────────────────────────────────────────────────────
-/** @deprecated UI 렌더용으로만 남겨둠. 로직에서는 getRaidCount() 사용 */
-export const RAID_COUNT = 4;
-
 export const PARTY_PER_RAID = 2;
-const CANDIDATE_COUNT = 35000;
+const PARTY_SIZE = 4;
+const CANDIDATE_COUNT = 30000;
 
-/**
- * 부캐 수에 따른 공대 수 계산
- *   altCount 1 → 2공대
- *   altCount 2 → 3공대
- *   altCount 3 → 4공대
- */
+/** 부캐 수 → 공대 수 */
 export function getRaidCount(altCount: number): number {
   return altCount + 1;
 }
 
-/**
- * 공대당 알트 최대 수용 수 계산
- * 총 알트 수(userCount × altCount)를 공대 수로 균등 분배
- * 나머지가 있으면 앞 공대부터 1개씩 더 받음 → ceil 사용
- */
-function getRaidAltCap(
-  userCount: number,
-  altCount: number,
-  raidCount: number,
-): number {
-  return Math.ceil((userCount * altCount) / raidCount);
-}
-
-/** 2파티 메인으로 선호되는 직업 */
-const PARTY2_PREFERRED_JOBS = new Set(["검성", "수호성", "호법성", "살성"]);
-
-/** 치유성/호법성이 메인일 때 딜러 알트 조합에 보상을 주는 직업 */
-const SPECIAL_MAIN_JOBS = new Set(["치유성", "호법성"]);
-
-function getDamageWeight(job: string, weights: Weights): number {
-  return weights.damage[job as keyof Weights["damage"]] ?? 0.7;
-}
+const HEAL_JOBS = new Set(["치유성"]);
+const SUPPORT_JOBS = new Set(["호법성", "수호성"]);
 
 // ─── 타입 ─────────────────────────────────────────────────────
 export interface OptimizerChar {
@@ -90,73 +68,16 @@ function makePrng(seed: number) {
   };
 }
 
-function shuffle<T>(arr: T[], rand: () => number): void {
-  for (let i = arr.length - 1; i > 0; i--) {
+function shuffle<T>(arr: T[], rand: () => number): T[] {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
     const j = Math.floor(rand() * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
+    [a[i], a[j]] = [a[j], a[i]];
   }
+  return a;
 }
 
-/** C# Choose<T> — nCk 조합 열거 */
-function* choose<T>(values: T[], k: number): Generator<T[]> {
-  if (k < 0 || k > values.length) return;
-  const idxs = Array.from({ length: k }, (_, i) => i);
-  while (true) {
-    yield idxs.map((i) => values[i]);
-    let i = k - 1;
-    while (i >= 0 && idxs[i] === i + values.length - k) i--;
-    if (i < 0) return;
-    idxs[i]++;
-    for (let j = i + 1; j < k; j++) idxs[j] = idxs[j - 1] + 1;
-  }
-}
-
-// ─── 페널티 / 보상 함수 ────────────────────────────────────────
-function supportPenalty(members: OptimizerChar[], weights: Weights): number {
-  if (members.some((x) => x.job === "치유성")) return 0;
-  if (members.some((x) => x.job === "호법성"))
-    return 5_000 * weights.rules.party2Chanter;
-  return 5_000_000 * weights.rules.party2Healer;
-}
-
-function specialMainStrongAltReward(
-  members: OptimizerChar[],
-  weights: Weights,
-): number {
-  const main = members.find((x) => x.isMain);
-  if (!main || !SPECIAL_MAIN_JOBS.has(main.job)) return 0;
-  const alts = members.filter((x) => !x.isMain);
-  const weighted = alts.reduce(
-    (s, x) => s + x.power * getDamageWeight(x.job, weights),
-    0,
-  );
-  const lowPenalty = alts.reduce(
-    (s, x) => s + (1 - getDamageWeight(x.job, weights)) * x.power * 0.04,
-    0,
-  );
-  return (-weighted * 0.2 + lowPenalty) * weights.rules.specialMainBoost;
-}
-
-// ─── 공대 내 알트 분할 점수 ────────────────────────────────────
-function scoreRaidSplit(
-  p1base: OptimizerChar[],
-  p2base: OptimizerChar[],
-  p1alts: OptimizerChar[],
-  p2alts: OptimizerChar[],
-  weights: Weights,
-): number {
-  const p1 = [...p1base, ...p1alts];
-  const p2 = [...p2base, ...p2alts];
-  const avg = (arr: OptimizerChar[]) =>
-    arr.reduce((s, x) => s + x.power, 0) / arr.length;
-  let score = Math.abs(avg(p1) - avg(p2)) * 2.2 * weights.rules.cpBalance;
-  score += supportPenalty(p2, weights) / 50;
-  score += specialMainStrongAltReward(p1, weights);
-  score += specialMainStrongAltReward(p2, weights);
-  return score;
-}
-
-// ─── 전체 플랜 점수 ────────────────────────────────────────────
+// ─── 점수 계산 (낮을수록 좋음) ────────────────────────────────
 function scorePlan(parties: PartyGroup[][], weights: Weights): number {
   const all = parties.flat();
   const avgs = all.map((p) =>
@@ -164,102 +85,100 @@ function scorePlan(parties: PartyGroup[][], weights: Weights): number {
       ? 0
       : p.members.reduce((s, x) => s + x.power, 0) / p.members.length,
   );
+
   const totalAvg = avgs.reduce((s, x) => s + x, 0) / avgs.length;
   const variance =
     avgs.reduce((s, a) => s + (a - totalAvg) ** 2, 0) / avgs.length;
   const range = Math.max(...avgs) - Math.min(...avgs);
-  const raidDiff = parties.reduce(
-    (s, raid) =>
-      s +
-      Math.abs(
-        raid[0].members.reduce((a, x) => a + x.power, 0) /
-          Math.max(raid[0].members.length, 1) -
-          raid[1].members.reduce((a, x) => a + x.power, 0) /
-            Math.max(raid[1].members.length, 1),
-      ),
-    0,
-  );
-  const suppPenalty = parties
-    .flatMap((r) => r)
-    .filter((p) => p.partyIndex === 1)
-    .reduce((s, p) => s + supportPenalty(p.members, weights), 0);
-  const p2MainPenalty = parties.reduce((s, raid) => {
-    const m = raid[1].members.find((x) => x.isMain);
-    return (
-      s +
-      (m && !PARTY2_PREFERRED_JOBS.has(m.job)
-        ? 200000000 * weights.rules.party2MainPref
-        : 0)
-    );
+
+  // 공대 내 파티 간 전력차
+  const raidDiff = parties.reduce((s, raid) => {
+    const a0 =
+      raid[0].members.reduce((a, x) => a + x.power, 0) /
+      Math.max(raid[0].members.length, 1);
+    const a1 =
+      raid[1].members.reduce((a, x) => a + x.power, 0) /
+      Math.max(raid[1].members.length, 1);
+    return s + Math.abs(a0 - a1);
   }, 0);
-  const specialReward = parties
-    .flat()
-    .reduce((s, p) => s + specialMainStrongAltReward(p.members, weights), 0);
-  const dupPenalty = constraintPenalty(parties, all, weights);
+
+  // 파티2에 치유 없으면 페널티
+  const healPenalty = parties.reduce((s, raid) => {
+    const p2 = raid[1].members;
+    if (p2.some((x) => HEAL_JOBS.has(x.job))) return s;
+    if (p2.some((x) => SUPPORT_JOBS.has(x.job))) return s + 50_000;
+    return s + 500_000;
+  }, 0);
 
   return (
-    (variance / 1_000) * weights.rules.cpBalance +
+    (variance / 1000) * weights.rules.cpBalance +
     range * 4 * weights.rules.cpBalance +
     raidDiff * 1.4 * weights.rules.raidBalance +
-    suppPenalty +
-    p2MainPenalty +
-    specialReward +
-    dupPenalty
+    healPenalty
   );
-}
-
-function constraintPenalty(
-  parties: PartyGroup[][],
-  allMembers: PartyGroup[],
-  weights: Weights,
-): number {
-  let penalty = 0;
-  const duplicatePenaltyWeight = weights.rules.duplicateUserPenalty;
-
-  // 파티당 알트 수는 공대별 실제 알트 수로 추정 (첫 공대 기준)
-  const raidAltCount = parties[0].reduce(
-    (s, p) => s + p.members.filter((x) => !x.isMain).length,
-    0,
-  );
-  const partySize = 1 + Math.round(raidAltCount / PARTY_PER_RAID);
-
-  for (const raid of parties) {
-    const raidMembers = raid.flatMap((p) => p.members);
-    const uniqueUsers = new Set(raidMembers.map((x) => x.userIndex)).size;
-    penalty +=
-      Math.max(0, raidMembers.length - uniqueUsers) *
-      10_000_000 *
-      duplicatePenaltyWeight;
-  }
-
-  const flat = allMembers.flatMap((p) => p.members);
-  const uniqueKeys = new Set(flat.map((x) => x.uniqueKey)).size;
-  penalty +=
-    Math.max(0, flat.length - uniqueKeys) * 10_000_000 * duplicatePenaltyWeight;
-
-  for (const party of allMembers) {
-    penalty += Math.abs(partySize - party.members.length) * 10_000_000;
-    penalty +=
-      Math.abs(1 - party.members.filter((x) => x.isMain).length) * 10_000_000;
-  }
-
-  return penalty;
 }
 
 // ─── 후보 1개 빌드 ─────────────────────────────────────────────
 function buildCandidate(
   users: OptimizerUser[],
-  altCountPerParty: number,
+  altCount: number,
   raidCount: number,
-  iteration: number,
   rand: () => number,
-  weights: Weights,
 ): PartyGroup[][] | null {
-  // ── 공대당 알트 수용 상한: 총 알트를 공대 수로 균등 분배 ──
-  // 예) 8명 × 2알트 = 16알트, 3공대 → ceil(16/3) = 6
-  const raidAltCap = getRaidAltCap(users.length, altCountPerParty, raidCount);
+  const totalChars = users.length * (1 + altCount);
+  const charsPerRaid = totalChars / raidCount;
 
-  // 빈 파티 구조 초기화
+  // 공대당 인원이 파티2개 × PARTY_SIZE로 딱 떨어져야 함
+  if (
+    !Number.isInteger(charsPerRaid) ||
+    charsPerRaid !== PARTY_SIZE * PARTY_PER_RAID
+  ) {
+    return null;
+  }
+
+  // ── 1. 공대별 캐릭터 풀 초기화 ──
+  const raidChars: OptimizerChar[][] = Array.from(
+    { length: raidCount },
+    () => [],
+  );
+  const userInRaid: Set<number>[] = Array.from(
+    { length: raidCount },
+    () => new Set(),
+  );
+
+  // ── 2. 본캐를 라운드로빈으로 공대에 배정 ──
+  const mains = shuffle(
+    users.map((u) => u.main),
+    rand,
+  );
+  for (let i = 0; i < mains.length; i++) {
+    const raidIdx = i % raidCount;
+    raidChars[raidIdx].push(mains[i]);
+    userInRaid[raidIdx].add(mains[i].userIndex);
+  }
+
+  // ── 3. 부캐를 배정 (본캐와 다른 공대, 인원 적은 공대 우선) ──
+  const alts: OptimizerChar[] = [];
+  for (const user of users) {
+    for (const alt of user.alts.slice(0, altCount)) alts.push(alt);
+  }
+
+  for (const alt of shuffle(alts, rand)) {
+    const candidates = Array.from({ length: raidCount }, (_, r) => r)
+      .filter((r) => !userInRaid[r].has(alt.userIndex))
+      .sort((a, b) => raidChars[a].length - raidChars[b].length);
+
+    if (candidates.length === 0) return null;
+    raidChars[candidates[0]].push(alt);
+    userInRaid[candidates[0]].add(alt.userIndex);
+  }
+
+  // ── 4. 공대 인원 수 검증 ──
+  for (let r = 0; r < raidCount; r++) {
+    if (raidChars[r].length !== charsPerRaid) return null;
+  }
+
+  // ── 5. 각 공대를 파티1 / 파티2(4명씩)로 분할 ──
   const parties: PartyGroup[][] = Array.from({ length: raidCount }, (_, r) =>
     Array.from({ length: PARTY_PER_RAID }, (_, p) => ({
       raidIndex: r,
@@ -267,113 +186,57 @@ function buildCandidate(
       members: [] as OptimizerChar[],
     })),
   );
-  const raidAltPool: OptimizerChar[][] = Array.from(
-    { length: raidCount },
-    () => [],
-  );
-  const raidUserSets: Set<number>[] = Array.from(
-    { length: raidCount },
-    () => new Set(),
-  );
-  const mainRaidByUser: number[] = new Array(users.length).fill(-1);
 
-  // ── 메인 배정 ──
-  const userIdxs = users.map((_, i) => i);
-  shuffle(userIdxs, rand);
-
-  const preferred = userIdxs.filter((i) =>
-    PARTY2_PREFERRED_JOBS.has(users[i].main.job),
-  );
-  shuffle(preferred, rand);
-
-  const assigned = new Set<number>();
-  // preferred를 2파티에 먼저 배정
-  for (let i = 0; i < preferred.length && i < raidCount; i++) {
-    const ui = preferred[i];
-    parties[i][1].members.push(users[ui].main);
-    mainRaidByUser[ui] = i;
-    raidUserSets[i].add(ui);
-    assigned.add(ui);
-  }
-
-  // 남은 슬롯에 남은 유저 배정
-  const remSlots: { raidIdx: number; partyIdx: number }[] = [];
-  for (let r = 0; r < raidCount; r++)
-    for (let p = 0; p < PARTY_PER_RAID; p++)
-      if (parties[r][p].members.length === 0)
-        remSlots.push({ raidIdx: r, partyIdx: p });
-  shuffle(remSlots, rand);
-
-  let remUsers = userIdxs.filter((i) => !assigned.has(i));
-  if (iteration % 5 === 0) {
-    remUsers = [...remUsers].sort(
-      (a, b) => users[b].main.power - users[a].main.power,
-    );
-  }
-
-  for (let i = 0; i < remUsers.length; i++) {
-    const ui = remUsers[i];
-    const slot = remSlots[i];
-    if (!slot) return null;
-    parties[slot.raidIdx][slot.partyIdx].members.push(users[ui].main);
-    mainRaidByUser[ui] = slot.raidIdx;
-    raidUserSets[slot.raidIdx].add(ui);
-  }
-
-  // ── 알트 공대 배정 ──
-  for (const user of users) {
-    const alts = [...user.alts]
-      .sort((a, b) => b.power - a.power)
-      .slice(0, altCountPerParty);
-    if (iteration % 3 !== 0) shuffle(alts, rand);
-
-    for (const alt of alts) {
-      const candidates = Array.from({ length: raidCount }, (_, r) => r)
-        .filter(
-          (r) =>
-            r !== mainRaidByUser[user.userIndex] &&
-            !raidUserSets[r].has(user.userIndex) &&
-            raidAltPool[r].length < raidAltCap,
-        )
-        .sort((a, b) => {
-          const sa = raidAltPool[a].reduce((s, x) => s + x.power, 0);
-          const sb = raidAltPool[b].reduce((s, x) => s + x.power, 0);
-          return sa !== sb ? sa - sb : rand() - 0.5;
-        });
-
-      if (candidates.length === 0) return null;
-      raidAltPool[candidates[0]].push(alt);
-      raidUserSets[candidates[0]].add(user.userIndex);
-    }
-  }
-
-  // ── 공대별 알트를 1·2파티로 분배 ──
-  // 공대마다 실제 알트 수가 다를 수 있으므로 절반씩 나눔
   for (let r = 0; r < raidCount; r++) {
-    const alts = raidAltPool[r];
-    const p1base = parties[r][0].members;
-    const p2base = parties[r][1].members;
+    const chars = raidChars[r];
+    const raidMains = shuffle(
+      chars.filter((c) => c.isMain),
+      rand,
+    );
+    const raidAlts = chars.filter((c) => !c.isMain);
 
-    // 이 공대에 배정된 알트를 절반씩 파티로 나눔
-    const halfSize = Math.floor(alts.length / 2);
+    // 치유/서포트 본캐 → 파티2 우선
+    const mainsP2: OptimizerChar[] = [];
+    const mainsP1: OptimizerChar[] = [];
+    const maxP2Mains = Math.floor(raidMains.length / 2) + 1;
 
-    let bestP1: OptimizerChar[] | null = null;
-    let bestP2: OptimizerChar[] | null = null;
-    let bestSc = Infinity;
-
-    for (const p1alts of choose(alts, halfSize)) {
-      const p2alts = alts.filter((x) => !p1alts.includes(x));
-      const sc = scoreRaidSplit(p1base, p2base, p1alts, p2alts, weights);
-      if (sc < bestSc) {
-        bestSc = sc;
-        bestP1 = p1alts;
-        bestP2 = p2alts;
+    for (const m of raidMains) {
+      if (
+        (HEAL_JOBS.has(m.job) || SUPPORT_JOBS.has(m.job)) &&
+        mainsP2.length < maxP2Mains
+      ) {
+        mainsP2.push(m);
+      } else {
+        mainsP1.push(m);
       }
     }
 
-    if (!bestP1 || !bestP2) return null;
-    parties[r][0].members.push(...bestP1);
-    parties[r][1].members.push(...bestP2);
+    // 각 파티에 본캐 최소 1명 보장
+    if (mainsP1.length === 0 && mainsP2.length > 1)
+      mainsP1.push(mainsP2.pop()!);
+    if (mainsP2.length === 0 && mainsP1.length > 1)
+      mainsP2.push(mainsP1.pop()!);
+    if (mainsP1.length === 0 || mainsP2.length === 0) return null;
+
+    const p1: OptimizerChar[] = [...mainsP1];
+    const p2: OptimizerChar[] = [...mainsP2];
+
+    // 치유 부캐 → 파티2 우선, 나머지 → 빈 쪽 채움
+    const sortedAlts = shuffle(raidAlts, rand).sort((a, b) => {
+      const score = (c: OptimizerChar) =>
+        HEAL_JOBS.has(c.job) ? -2 : SUPPORT_JOBS.has(c.job) ? -1 : 0;
+      return score(a) - score(b);
+    });
+
+    for (const alt of sortedAlts) {
+      if (p2.length < PARTY_SIZE) p2.push(alt);
+      else if (p1.length < PARTY_SIZE) p1.push(alt);
+    }
+
+    if (p1.length !== PARTY_SIZE || p2.length !== PARTY_SIZE) return null;
+
+    parties[r][0].members = p1;
+    parties[r][1].members = p2;
   }
 
   return parties;
@@ -384,26 +247,20 @@ function buildWarnings(parties: PartyGroup[][]): string[] {
   const warns: string[] = [];
   for (let r = 0; r < parties.length; r++) {
     const p2 = parties[r][1].members;
-    const hasCleric = p2.some((x) => x.job === "치유성");
-    const hasChanter = p2.some((x) => x.job === "호법성");
-    if (!hasCleric && !hasChanter) {
-      warns.push(`${r + 1}공대 2파티에 치유성 또는 호법성이 없습니다.`);
+    if (
+      !p2.some((x) => HEAL_JOBS.has(x.job)) &&
+      !p2.some((x) => SUPPORT_JOBS.has(x.job))
+    ) {
+      warns.push(`${r + 1}공대 2파티에 치유성/호법성/수호성이 없습니다.`);
     }
   }
   return warns;
 }
 
 // ─── 메인 엔트리 ──────────────────────────────────────────────
-/**
- * C# PartyOptimizer.BuildBestPlan() 에 해당.
- * 35,000회 후보를 생성해 최저 점수 플랜을 반환한다.
- *
- * 공대 수는 altCountPerParty 에 따라 자동 결정된다.
- *   altCount 1 → 2공대, altCount 2 → 3공대, altCount 3 → 4공대
- */
 export function buildBestPlan(
   users: OptimizerUser[],
-  altCountPerParty: number = 3,
+  altCountPerParty: number = 2,
   weights: Weights = DEFAULT_WEIGHTS,
 ): PartyPlan {
   const raidCount = getRaidCount(altCountPerParty);
@@ -412,14 +269,7 @@ export function buildBestPlan(
   let bestScore = Infinity;
 
   for (let i = 0; i < CANDIDATE_COUNT; i++) {
-    const cand = buildCandidate(
-      users,
-      altCountPerParty,
-      raidCount,
-      i,
-      rand,
-      weights,
-    );
+    const cand = buildCandidate(users, altCountPerParty, raidCount, rand);
     if (!cand) continue;
     const sc = scorePlan(cand, weights);
     if (sc < bestScore) {
@@ -428,7 +278,12 @@ export function buildBestPlan(
     }
   }
 
-  if (!best) throw new Error("파티 편성 실패: 유효한 플랜을 찾지 못했습니다.");
+  if (!best) {
+    throw new Error(
+      `파티 편성 실패: 유효한 플랜을 찾지 못했습니다.\n` +
+        `(플레이어 ${users.length}명, 부캐 ${altCountPerParty}개, ${raidCount}공대)`,
+    );
+  }
 
   return { parties: best, warnings: buildWarnings(best) };
 }

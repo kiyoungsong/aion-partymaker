@@ -4,18 +4,18 @@ import type { IPlayerDraft } from "../types";
 import type { Weights } from "../types/party";
 import { DEFAULT_WEIGHTS } from "../meta";
 
+// ─── Boss ─────────────────────────────────────────────────────
 interface BossState {
   raid: string;
   setRaid: (raid: string) => void;
-  clearRaid: () => void;
 }
 
 export const useBossStore = create<BossState>()((set) => ({
   raid: "루드라",
   setRaid: (raid) => set({ raid }),
-  clearRaid: () => set({ raid: "루드라" }),
 }));
 
+// ─── Weights ──────────────────────────────────────────────────
 interface WeightState {
   weights: Weights;
   setWeights: (weights: Weights) => void;
@@ -29,26 +29,23 @@ export const useWeightStore = create<WeightState>()(
       setWeights: (weights) => set({ weights }),
       resetWeights: () => set({ weights: DEFAULT_WEIGHTS }),
     }),
-    {
-      name: "aion-partymaker-weights",
-    },
+    { name: "aion-partymaker-weights" },
   ),
 );
 
+// ─── PlayerDraft ──────────────────────────────────────────────
 const uid = () => "x" + Math.random().toString(36).slice(2, 9);
 
-function makeEmptyChar(kind: "본" | "부") {
-  return { id: uid(), name: "", kind, job: "궁성", power: "" } as const;
+function makeEmptyChar(kind: "본" | "부"): IPlayerDraft["chars"][number] {
+  return { id: uid(), name: "", kind, job: "궁성", power: "" };
 }
 
-function makeEmptyPlayer(): IPlayerDraft {
+function makeEmptyPlayer(altCount: number): IPlayerDraft {
   return {
     id: uid(),
     chars: [
-      { ...makeEmptyChar("본") },
-      { ...makeEmptyChar("부") },
-      { ...makeEmptyChar("부") },
-      { ...makeEmptyChar("부") },
+      makeEmptyChar("본"),
+      ...Array.from({ length: altCount }, () => makeEmptyChar("부")),
     ],
   };
 }
@@ -67,21 +64,17 @@ interface PlayerDraftState {
 
 export const usePlayerDraftStore = create<PlayerDraftState>()(
   persist(
-    (set) => ({
-      players: Array.from({ length: 8 }, makeEmptyPlayer),
-      altCount: 3,
+    (set, get) => ({
+      players: Array.from({ length: 8 }, () => makeEmptyPlayer(2)),
+      altCount: 2,
       setPlayers: (next) =>
         set((state) => ({
           players: typeof next === "function" ? next(state.players) : next,
         })),
       setAltCount: (n) => set({ altCount: n }),
       resetPlayers: () =>
-        set({
-          players: Array.from({ length: 8 }, makeEmptyPlayer),
-        }),
+        set({ players: Array.from({ length: 8 }, () => makeEmptyPlayer(get().altCount)) }),
     }),
-    {
-      name: "aion-partymaker-player-drafts",
-    },
+    { name: "aion-partymaker-player-drafts" },
   ),
 );
